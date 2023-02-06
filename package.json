@@ -1,11 +1,17 @@
 {
   "name": "trojan-manager",
-  "version": "1.0.4",
-  "description": "",
+  "version": "1.0.5",
+  "description": "阿里云自动在抢占式服务器上面构建trojan应用.",
   "keywords": [
     "trojan",
-    "aliyun"
+    "aliyun",
+    "抢占式服务器",
+    "阿里云"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LcpMarvel/trojan-manager.git"
+  },
   "license": "ISC",
   "author": "lcpmarvel",
   "main": "./dist/index.js",
