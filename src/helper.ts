@@ -1,9 +1,9 @@
 import crypto from 'crypto'
 import { Client, type ConnectConfig } from 'ssh2'
-import { type ScpClient } from 'node-scp'
+import { Client as SShClient, type ScpClient, type TScpOptions } from 'node-scp'
 import { writeFileSync } from 'fs'
 
-const sleep = async (ms = 5000): Promise<void> => { await new Promise(resolve => setTimeout(resolve, ms)) }
+export async function sleep (ms = 5000): Promise<void> { await new Promise(resolve => setTimeout(resolve, ms)) }
 
 export async function waitUtilReady (handler: () => Promise<boolean>): Promise<void> {
   await sleep()
@@ -38,20 +38,17 @@ export async function _ssh (connectConfig: ConnectConfig): Promise<Client> {
 }
 
 export async function ssh (connectConfig: ConnectConfig): Promise<Client> {
-  let times = 0
   let error: any
 
-  while (times < 10) {
-    times += 1
-
+  for (let i = 0; i < 10; i++) {
     try {
       return await _ssh(connectConfig)
     } catch (err) {
       console.error(err)
+      console.log('5s后 重试')
+
       await sleep(5000)
       error = err
-
-      console.log('reconnecting...')
     }
   }
 
@@ -65,20 +62,36 @@ export async function sshExec (conn: Client, cmd: string): Promise<string> {
         reject(error)
       }
 
-      stream.pipe(process.stdout)
-      stream.stderr.pipe(process.stderr)
-
       stream.on('close', (code: string) => {
         console.log(`${cmd} 执行完毕!`)
         resolve(code)
-
-        conn.end()
       }).on('data', (data: string) => {
         console.log('OUTPUT: ' + data)
       })
       stream.end('ls -l\nexit\n')
     })
   })
+}
+
+export async function sshUploader (config: TScpOptions): Promise<ScpClient> {
+  let error: any
+
+  for (let i = 0; i < 5; i++) {
+    try {
+      return await SShClient({
+        ...config,
+        username: 'root'
+      })
+    } catch (err) {
+      console.error(err)
+      console.log('5s后 重试')
+
+      await sleep(5000)
+      error = err
+    }
+  }
+
+  throw error
 }
 
 export async function uploadFileByContent (uploader: ScpClient, content: string): Promise<void> {

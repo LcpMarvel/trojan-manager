@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import yargs from 'yargs'
-import Aliyun from './src/aliyun'
+import Aliyun from './src/aliyun/aliyun'
+import Dns from './src/aliyun/dns'
 import Settings from './src/settings'
 
 const aliyun = new Aliyun(new Settings())
@@ -21,11 +22,33 @@ async function main (): Promise<void> {
       }
     )
     .command(
+      'start',
+      'Start the servers',
+      (argv) => {
+        return argv.option('r', { alias: 'regionId', type: 'string' })
+      },
+      async (argv) => {
+        await aliyun.startInstances(argv.regionId as string)
+      }
+    )
+    .command(
+      'stop',
+      'Stop the servers, save momey',
+      (argv) => {
+        return argv.option('r', { alias: 'regionId', type: 'string' })
+      },
+      async (argv) => {
+        await aliyun.stopInstances(argv.regionId as string)
+      }
+    )
+    .command(
       'down',
       'Destroy trojan',
-      () => {},
       (argv) => {
-        console.log(argv.regionId)
+        return argv.option('r', { alias: 'regionId', type: 'string' })
+      },
+      async (argv) => {
+        await aliyun.destroyInstances(argv.regionId as string)
       }
     )
     .command(
@@ -43,6 +66,17 @@ async function main (): Promise<void> {
           password: argv.password as string,
           port: 22
         })
+      }
+    )
+    .command(
+      'bind-host',
+      'add domain record',
+      (argv) => {
+        return argv
+          .option('h', { alias: 'host', type: 'string', demandOption: true })
+      },
+      async (argv) => {
+        await new Dns(new Settings()).bindDomian(argv.host as string)
       }
     )
     .command(

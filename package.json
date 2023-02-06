@@ -1,6 +1,6 @@
 {
   "name": "trojan-manager",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "description": "",
   "keywords": [
     "trojan",
@@ -12,13 +12,16 @@
   "bin": {
     "trojan-manager": "./dist/index.js"
   },
+  "files": [
+    "dist/**"
+  ],
   "scripts": {
-    "build": "tsc -p .",
-    "local": "npm run build && npm i -g . && trojan-manager",
-    "start": "nodemon --watch 'src/**/*.ts' --exec 'ts-node' src/index.ts",
+    "build": "rm -rf dist && tsc -p . && cp -R ./src/templates ./dist/src/",
+    "local": "npm run build && npm link && trojan-manager",
     "test": "jest"
   },
   "dependencies": {
+    "@alicloud/alidns20150109": "^3.0.1",
     "@alicloud/ecs20140526": "^3.0.1",
     "node-scp": "^0.0.22",
     "sprightly": "^2.0.1",

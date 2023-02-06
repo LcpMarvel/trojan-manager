@@ -1,11 +1,11 @@
-import ECS, { type DescribeVSwitchesResponse, type DescribeRegionsResponseBodyRegionsRegion, type DescribeZonesResponseBodyZonesZone, type DescribeInstancesResponseBodyInstancesInstance, type RunInstancesRequest } from '@alicloud/ecs20140526'
+import ECS, { type DescribeVSwitchesResponse, type DescribeRegionsResponseBodyRegionsRegion, type DescribeZonesResponseBodyZonesZone, type DescribeInstancesResponseBodyInstancesInstance, type RunInstancesRequest, type DescribeInstanceAttributeResponseBody } from '@alicloud/ecs20140526'
 import { Config } from '@alicloud/openapi-client'
-import Client from 'node-scp'
-import { basename } from 'path'
+import { basename, join } from 'path'
 import { sprightly } from 'sprightly'
 import { type ConnectConfig } from 'ssh2'
-import { ssh, sshExec, uploadFileByContent, waitUtilReady } from './helper'
-import type Settings from './settings'
+import { sleep, ssh, sshExec, sshUploader, uploadFileByContent, waitUtilReady } from '../helper'
+import Settings from '../settings'
+import Dns from './dns'
 
 interface NetworkConfig {
   vpcId: string
@@ -15,6 +15,8 @@ interface NetworkConfig {
 }
 
 export default class Aliyun {
+  readonly vpcName = 'trojanCreatedVpc'
+
   constructor (private readonly settings: Settings) {
   }
 
@@ -98,51 +100,136 @@ export default class Aliyun {
     })
 
     console.log('服务器创建成功!')
+    const host = (instance?.publicIpAddress?.ipAddress ?? [])[0]
+
+    await new Dns(this.settings).bindDomian(host)
 
     await this.setupTrojan({
-      host: (instance?.publicIpAddress?.ipAddress ?? [])[0],
+      host,
       port: 22,
       username: 'root',
       password
     })
   }
 
+  async startInstances (regionId?: string): Promise<void> {
+    const regionIds = await this.fetchRegionIds(regionId)
+
+    const collection = await Promise.all(regionIds.map(async (regionId) => {
+      const instances = await this.getInstances(regionId)
+
+      return {
+        regionId,
+        instances: instances.filter((instance) => instance.status === 'Stopped')
+      }
+    }))
+
+    const result = collection.find(({ instances }) => {
+      return instances.length > 0
+    })
+
+    if (result !== undefined) {
+      const client = await this.createClientByRegionId(result.regionId)
+
+      const instance = result.instances[0]
+      const instanceId = instance.instanceId ?? ''
+
+      await client.startInstances({
+        regionId: result.regionId,
+        instanceId: [instanceId],
+        toMap () {
+          return {}
+        }
+      })
+
+      await sleep()
+
+      await this.bindDomainByInstanceId(client, instanceId)
+    }
+  }
+
+  async stopInstances (regionId?: string): Promise<void> {
+    const regionIds = await this.fetchRegionIds(regionId)
+
+    regionIds.map(async (regionId) => {
+      const client = await this.createClientByRegionId(regionId)
+      const instances = await this.getInstances(regionId)
+
+      const instanceIds = instances
+        .filter((instance) => instance.status === 'Running')
+        .map((instance) => instance.instanceId ?? '')
+
+      if (instanceIds.length > 0) {
+        await client.stopInstances({
+          regionId,
+          instanceId: instanceIds,
+          forceStop: true,
+          stoppedMode: 'StopCharging',
+          toMap () {
+            return {}
+          }
+        })
+      }
+    })
+  }
+
+  async destroyInstances (regionId?: string): Promise<void> {
+    const regionIds = await this.fetchRegionIds(regionId)
+
+    regionIds.map(async (regionId) => {
+      const client = await this.createClientByRegionId(regionId)
+      const instances = await this.getInstances(regionId)
+
+      const instanceIds = instances
+        .map((instance) => instance.instanceId ?? '')
+
+      if (instanceIds.length > 0) {
+        await client.deleteInstances({
+          regionId,
+          instanceId: instanceIds,
+          force: true,
+          toMap () {
+            return {}
+          }
+        })
+      }
+    })
+  }
+
   async setupTrojan (connectConfig: ConnectConfig): Promise<void> {
-    const conn = await ssh(connectConfig)
+    const sslKeyName = basename(this.settings.sslKeyPath)
+    const sslCertName = basename(this.settings.sslCertPath)
 
-    console.log('拷贝 installer.sh')
-
-    const sslKeyPath = `/root/ssl/${basename(this.settings.sslKeyPath)}`
-    const sslCertPath = `/root/ssl/${basename(this.settings.sslCertPath)}`
-
-    const scripts = sprightly(`${process.cwd()}/templates/installer.sh`, {
+    const scripts = sprightly(join(__dirname, '../templates/installer.sh'), {
       domain: this.settings.domain,
       email: 'test@gmail.com',
-      trojanConfig: sprightly(`${process.cwd()}/templates/trojan.config.json`, {
+      sslKeyName,
+      sslCertName,
+      trojanConfig: sprightly(join(__dirname, '../templates/trojan.config.json'), {
         password: this.settings.trojanPassword,
         domain: this.settings.domain,
-        sslKeyPath,
-        sslCertPath
+        sslKeyName,
+        sslCertName
       })
     })
 
-    const uploader = await Client({
-      ...connectConfig,
-      username: 'root'
-    })
+    const uploader = await sshUploader(connectConfig)
 
+    console.log('拷贝 installer.sh')
     await uploadFileByContent(uploader, scripts)
-    await uploader.uploadFile(this.settings.sslCertPath, sslCertPath)
-    await uploader.uploadFile(this.settings.sslKeyPath, sslKeyPath)
+    console.log('拷贝 SSL 文件')
+    await uploader.uploadFile(this.settings.sslCertPath, `/root/${sslCertName}`)
+    await uploader.uploadFile(this.settings.sslKeyPath, `/root/${sslKeyName}`)
     uploader.close()
 
+    const conn = await ssh(connectConfig)
     console.log('执行脚本...')
     await sshExec(conn, 'nohup bash installer.sh > info.log > /dev/null 2>&1 &')
+    conn.end()
 
     console.log(`
-      安装程序已经在服务器上运行,
-      请将域名 ${this.settings.domain} 解析到 ${connectConfig.host ?? ''} 上,
-      大约10分钟后, trojan 就绪!
+      安装程序已经在服务器上运行, DNS解析时间比较占用时间
+      大约10分钟后, trojan 就绪.
 
       Address: ${this.settings.domain}
       Port: 443
@@ -186,7 +273,7 @@ export default class Aliyun {
       const vpcRequestResult = await client.createVpc({
         regionId,
         cidrBlock: '172.16.0.0/24',
-        vpcName: 'trojanCreatedVpc',
+        vpcName: this.vpcName,
         toMap () {
           return {}
         }
@@ -229,10 +316,7 @@ export default class Aliyun {
     }
   }
 
-  private async createOrGetVSwitch (client: ECS, regionId: string, vpcId: string): Promise<{
-    vSwitchId: string
-    zoneId: string
-  }> {
+  private async createOrGetVSwitch (client: ECS, regionId: string, vpcId: string): Promise<Pick<NetworkConfig, 'vSwitchId' | 'zoneId'>> {
     const zoneId = await this.getZoneId(client, regionId)
 
     const queryVSwitches = async (): Promise<DescribeVSwitchesResponse> => {
@@ -325,6 +409,61 @@ export default class Aliyun {
     return securityGroupId
   }
 
+  private async getInstances (regionId: string): Promise<DescribeInstancesResponseBodyInstancesInstance[]> {
+    const client = await this.createClientByRegionId(regionId)
+
+    const vpc = await client.describeVpcs({
+      regionId,
+      toMap () {
+        return {}
+      }
+    }).then((res) => {
+      const vpcs = res.body.vpcs?.vpc
+
+      if (Array.isArray(vpcs) && vpcs.length > 0) {
+        return vpcs.find((vpc) => vpc.vpcName === this.vpcName)
+      }
+    })
+
+    const vpcId = vpc?.vpcId ?? undefined
+
+    if (vpcId === undefined) {
+      return []
+    }
+
+    return await client.describeInstances({
+      regionId,
+      pageSize: 100,
+      vpcId,
+      toMap () {
+        return {}
+      }
+    }).then((res) => {
+      return res.body.instances?.instance ?? []
+    })
+  }
+
+  private async getInstance (client: ECS, instanceId: string): Promise<DescribeInstanceAttributeResponseBody> {
+    return await client.describeInstanceAttribute({
+      instanceId,
+      toMap () {
+        return {}
+      }
+    }).then((res) => {
+      return res.body
+    })
+  }
+
+  private async bindDomainByInstanceId (client: ECS, instanceId: string): Promise<void> {
+    const instance = await this.getInstance(client, instanceId)
+
+    const ipAddress = instance.publicIpAddress?.ipAddress
+
+    if (Array.isArray(ipAddress) && ipAddress.length > 0) {
+      await new Dns(new Settings()).bindDomian(ipAddress[0])
+    }
+  }
+
   private async fetchZones (client: ECS, regionId: string): Promise<DescribeZonesResponseBodyZonesZone[]> {
     return await client.describeZones({
       regionId,
@@ -361,8 +500,8 @@ export default class Aliyun {
     config.accessKeyId = this.settings.accessKeyId
     config.accessKeySecret = this.settings.accessKeySecret
     config.endpoint = endpoint
-    config.connectTimeout = 5000
-    config.readTimeout = 5000
+    config.connectTimeout = 10000
+    config.readTimeout = 10000
 
     return new ECS(config)
   }
@@ -376,6 +515,16 @@ export default class Aliyun {
     }
 
     return this.createClient(region.regionEndpoint)
+  }
+
+  private async fetchRegionIds (regionId?: string): Promise<string[]> {
+    if (typeof regionId === 'string' && regionId.length > 0) {
+      return [regionId]
+    }
+
+    const regions = await this.fetchRegions()
+
+    return regions.map((region) => region.regionId ?? '')
   }
 
   private async fetchRegions (): Promise<DescribeRegionsResponseBodyRegionsRegion[]> {

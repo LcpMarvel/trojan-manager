@@ -23,7 +23,14 @@ cat << EOF >> /etc/trojan/config.json
 {{ trojanConfig }}
 EOF
 
-# chown -R 644 /root/ssl
+adduser --disabled-password --gecos "" trojan
+adduser trojan sudo
+
+mkdir /home/trojan/ssl
+mv /root/{{ sslKeyName }} /home/trojan/ssl/
+mv /root/{{ sslCertName }} /home/trojan/ssl/
+chown trojan:trojan /etc/trojan/config.json
+chown -R trojan:trojan /home/trojan/ssl
 
 systemctl enable trojan
 systemctl start trojan
