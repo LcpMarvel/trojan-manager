@@ -48,6 +48,7 @@ export default class Aliyun {
         imageId: await this.getSystemImageId(client, regionId),
         internetMaxBandwidthOut: this.settings.bandwidth,
         internetChargeType: 'PayByTraffic',
+        ioOptimized: 'optimized',
         systemDisk: {
           size: '20',
           category: 'cloud_efficiency',
@@ -70,7 +71,11 @@ export default class Aliyun {
 
           return (result.body.instanceIdSets?.instanceIdSet ?? [])[0]
         } catch (error: any) {
-          if (error.code !== 'InvalidResourceType.NotSupported') {
+          const code: string = error.code
+
+          if (
+            !/^(InvalidResourceType|InstanceType|InvalidInstanceType)\..+/.test(code)
+          ) {
             throw error
           }
         }

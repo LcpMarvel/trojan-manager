@@ -1,6 +1,6 @@
 {
   "name": "trojan-manager",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "阿里云自动在抢占式服务器上面构建trojan应用.",
   "keywords": [
     "trojan",
